@@ -1,0 +1,10 @@
+{
+  "vms": {
+    "sec": {
+      "name": "sec",
+      "color": "#ff7b54",
+      "sshTarget": "sec@vsock%3",
+      "apps": []
+    }
+  }
+}

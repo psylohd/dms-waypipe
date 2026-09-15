@@ -1,0 +1,8 @@
+{
+  "id": "vm-launcher",
+  "name": "VM App Launcher",
+  "type": "launcher",
+  "trigger": "sec",
+  "enabled": true,
+  "component": "./VmLauncher.qml"
+}
