@@ -211,6 +211,13 @@ func ParseDesktopFile(content []byte) AppEntry {
 		}
 	}
 
+	// Strip desktop entry field specifiers (%u, %U, %f, etc.) - they need URL/file args
+	// Also strip flatpak URL/file forwarding syntax: @@u %U @@ and bare @@u @@
+	for _, r := range []string{"%u", "%U", "%f", "%F", "@@u", "@@"} {
+		exec = strings.ReplaceAll(exec, r, "")
+	}
+	exec = strings.TrimSpace(exec)
+
 	// Heuristic: Java AWT/Swing apps need X11 forwarding, not waypipe
 	forwardMode := "waypipe"
 	if strings.Contains(exec, "java ") || strings.Contains(exec, "/BurpSuite") {

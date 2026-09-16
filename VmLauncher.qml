@@ -34,8 +34,7 @@ Item {
                     var app = apps[i];
                     if (!app.Exec) continue;
 
-                    // Strip flatpak URL placeholders (@@u %U @@
-                    var exec = (app.Exec || "").replace(/@@u\s*%U\s*@@/g, "").trim();
+                    var exec = app.Exec || "";
 
                     // Use x11: prefix for apps that need X11 forwarding (Java AWT/Swing)
                     var actionPrefix = (app.ForwardMode === "x11") ? "x11:" : "vm:";
