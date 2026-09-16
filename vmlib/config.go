@@ -24,8 +24,9 @@ type AppEntry struct {
 	Icon     string   // icon path or stock name
 	Keywords []string // extra fuzzy-search terms
 	Comment  string   // secondary description
-	NoDisplay bool    // whether desktop file has NoDisplay=true
+	NoDisplay  bool   // whether desktop file has NoDisplay=true
 	Type     string   // Desktop Entry type (Application, etc.)
+	ForwardMode string // forwarding mode: "waypipe" (default) or "x11" for Java AWT/Swing apps
 }
 
 type Config struct {

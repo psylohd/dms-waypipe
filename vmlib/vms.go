@@ -211,14 +211,21 @@ func ParseDesktopFile(content []byte) AppEntry {
 		}
 	}
 
+	// Heuristic: Java AWT/Swing apps need X11 forwarding, not waypipe
+	forwardMode := "waypipe"
+	if strings.Contains(exec, "java ") || strings.Contains(exec, "/BurpSuite") {
+		forwardMode = "x11"
+	}
+
 	return AppEntry{
-		Name:      name,
-		Exec:      exec,
-		Icon:      icon,
-		Comment:   comment,
-		Keywords:  keywords,
-		NoDisplay: noDisplay,
-		Type:      entryType,
+		Name:        name,
+		Exec:        exec,
+		Icon:        icon,
+		Comment:     comment,
+		Keywords:    keywords,
+		NoDisplay:   noDisplay,
+		Type:        entryType,
+		ForwardMode: forwardMode,
 	}
 }
 

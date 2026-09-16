@@ -1,6 +1,6 @@
 import QtQuick
-
 import Quickshell
+import Quickshell.Io
 
 Item {
     id: root
@@ -8,29 +8,62 @@ Item {
     property var pluginService: null
     property string pluginId: "vm-launcher"
 
-    property var cachedItems: [
-        { name: "sec: chkrootkit", icon: "chkrootkit", comment: "Locally check for signs of a rootkit", action: "vm:sec:bash -c \"pkexec chkrootkit ; read -p 'Press ENTER to exit'\"", categories: ["VM Apps"], keywords: [] },
-        { name: "sec: VSCodium", icon: "vscodium", comment: "Code Editing. Redefined.", action: "vm:sec:/usr/share/codium/codium --ozone-platform=wayland --disable-gpu", categories: ["VM Apps"], keywords: ["vscodium","codium","vscode"] },
-        { name: "sec: Ghostty", icon: "com.mitchellh.ghostty", comment: "A terminal emulator", action: "vm:sec:/usr/bin/ghostty --gtk-single-instance=true", categories: ["VM Apps"], keywords: ["terminal","tty","pty"] },
-        { name: "sec: EtherApe", icon: "etherape", comment: "Graphical Network Monitor", action: "vm:sec:etherape", categories: ["VM Apps"], keywords: ["network","ethernet","sniff"] },
-        { name: "sec: Ettercap", icon: "ettercap", comment: "Ettercap is a multipurpose sniffer/content filter", action: "vm:sec:ettercap -G", categories: ["VM Apps"], keywords: ["network","sniffer","security"] },
-        { name: "sec: GParted", icon: "gparted", comment: "GNOME partition editor", action: "vm:sec:/usr/bin/gparted", categories: ["VM Apps"], keywords: ["partition","disk","editor"] },
-        { name: "sec: Htop", icon: "htop", comment: "Interactive process viewer", action: "vm:sec:htop", categories: ["VM Apps"], keywords: ["process","system","monitor"] },
-        { name: "sec: Kitty", icon: "kitty", comment: "A fast, GPU based terminal emulator", action: "vm:sec:kitty", categories: ["VM Apps"], keywords: ["terminal","emulator","gpu"] },
-        { name: "sec: LibreOffice Base", icon: "libreoffice-base", comment: "Database", action: "vm:sec:libreoffice --base", categories: ["VM Apps"], keywords: ["database","office"] },
-        { name: "sec: LibreOffice Calc", icon: "libreoffice-calc", comment: "Spreadsheet", action: "vm:sec:libreoffice --calc", categories: ["VM Apps"], keywords: ["spreadsheet","office"] },
-        { name: "sec: LibreOffice Writer", icon: "libreoffice-writer", comment: "Word processor", action: "vm:sec:libreoffice --writer", categories: ["VM Apps"], keywords: ["word","processor","office"] },
-        { name: "sec: Neovim", icon: "nvim", comment: "Neovim", action: "vm:sec:neovim", categories: ["VM Apps"], keywords: ["editor","text","vim"] },
-        { name: "sec: Files", icon: "org.gnome.Nautilus", comment: "Access and organize files", action: "vm:sec:nautilus --new-window", categories: ["VM Apps"], keywords: ["files","nautilus","folder","manager","explore","filesystem"] },
-        { name: "sec: Zen Browser", icon: "app.zen_browser.zen", comment: "A fast, private and secure web browser", action: "vm:sec:/usr/bin/flatpak run app.zen_browser.zen", categories: ["VM Apps"], keywords: ["browser","web","flatpak"] }
-    ]
+    property var cachedItems: []
 
     readonly property string _dmsVmBin: "/home/intox/.local/bin/dms-vm"
 
+    FileView {
+        id: configFile
+        path: "/home/intox/.config/dms-waypipe/config.json"
+        blockLoading: true
+        preload: false
+    }
+
+    function loadItemsFromConfig() {
+        var text = configFile.text();
+        if (!text) return;
+        try {
+            var config = JSON.parse(text);
+            var vms = config.vms || {};
+            var items = [];
+
+            for (var vmName in vms) {
+                var vm = vms[vmName];
+                var apps = vm.apps || [];
+                for (var i = 0; i < apps.length; i++) {
+                    var app = apps[i];
+                    if (!app.Exec) continue;
+
+                    // Strip flatpak URL placeholders (@@u %U @@
+                    var exec = (app.Exec || "").replace(/@@u\s*%U\s*@@/g, "").trim();
+
+                    // Use x11: prefix for apps that need X11 forwarding (Java AWT/Swing)
+                    var actionPrefix = (app.ForwardMode === "x11") ? "x11:" : "vm:";
+
+                    items.push({
+                        name: vmName + ": " + app.Name,
+                        icon: app.Icon || "computer",
+                        comment: app.Comment || "",
+                        action: actionPrefix + vmName + ":" + exec,
+                        categories: ["VM Apps"],
+                        keywords: app.Keywords || []
+                    });
+                }
+            }
+
+            cachedItems = items;
+            if (pluginService) pluginService.itemsChanged();
+        } catch (e) {
+            console.error("[vm-launcher] config parse error:", e);
+        }
+    }
+
     function getItems(query) {
         if (cachedItems.length === 0) {
-            return [{ name: "VM Apps (loading...)", icon: "computer", comment: "Loading...",
-                      action: "", categories: ["VM Apps"], keywords: [] }];
+            loadItemsFromConfig();
+        }
+        if (cachedItems.length === 0) {
+            return [];
         }
 
         var search = query;
@@ -54,12 +87,21 @@ Item {
         if (!item || !item.action) return;
         var parts = item.action.split(":");
         if (parts.length < 3) return;
+        var mode = parts[0]; // "vm" or "x11"
         var vmName = parts[1];
         var execCmd = parts.slice(2).join(":");
-        Quickshell.execDetached(
-            ["/bin/bash", "-c", _dmsVmBin + " launch " + vmName + " " + execCmd + " > /dev/null 2>&1"],
-            function(out, err, code) {
-                if (code !== 0) console.error("[vm-launcher] launch failed:", err);
-            });
+        if (mode === "x11") {
+            Quickshell.execDetached(
+                ["/bin/bash", "-c", _dmsVmBin + " launch --x11 " + vmName + " " + execCmd + " > /dev/null 2>&1"],
+                function(out, err, code) {
+                    if (code !== 0) console.error("[vm-launcher] x11 launch failed:", err);
+                });
+        } else {
+            Quickshell.execDetached(
+                ["/bin/bash", "-c", _dmsVmBin + " launch " + vmName + " " + execCmd + " > /dev/null 2>&1"],
+                function(out, err, code) {
+                    if (code !== 0) console.error("[vm-launcher] launch failed:", err);
+                });
+        }
     }
 }

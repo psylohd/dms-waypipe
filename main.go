@@ -36,13 +36,19 @@ func main() {
 		runListApps(os.Args[2])
 
 	case "launch":
-		if len(os.Args) < 4 {
-			fmt.Fprintln(os.Stderr, "usage: dms-vm launch <vmname> <exec>")
+		useX11 := false
+		argStart := 2
+		if os.Args[2] == "--x11" {
+			useX11 = true
+			argStart = 3
+		}
+		if len(os.Args) < argStart+2 {
+			fmt.Fprintln(os.Stderr, "usage: dms-vm launch [--x11] <vmname> <exec>")
 			os.Exit(1)
 		}
-		vmName := os.Args[2]
-		execCmd := strings.Join(os.Args[3:], " ")
-		runLaunch(vmName, execCmd)
+		vmName := os.Args[argStart]
+		execCmd := strings.Join(os.Args[argStart+1:], " ")
+		runLaunch(vmName, execCmd, useX11)
 
 	case "list-vms":
 		runListVMs()
@@ -54,12 +60,13 @@ func main() {
 		}
 		runReadResult(os.Args[2])
 
-	case "refresh-apps":
-		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: dms-vm refresh-apps <vmname>")
-			os.Exit(1)
+	case "refresh":
+		cfgPath := configPath()
+		vmName := ""
+		if len(os.Args) >= 3 {
+			vmName = os.Args[2]
 		}
-		runListApps(os.Args[2])
+		runRefreshApps(cfgPath, vmName)
 
 	case "generate-rules":
 		cfgPath := configPath()
@@ -199,7 +206,7 @@ func runListApps(vmName string) {
 	json.NewEncoder(os.Stdout).Encode(apps)
 }
 
-func runLaunch(vmName, execCmd string) {
+func runLaunch(vmName, execCmd string, useX11 bool) {
 	cfg := loadVMConfig()
 	vmCfg, ok := cfg.VMs[vmName]
 	if !ok {
@@ -207,12 +214,23 @@ func runLaunch(vmName, execCmd string) {
 		os.Exit(1)
 	}
 
-	result, err := vmlib.LaunchApp(vmName, execCmd, vmCfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "vm: launch:", err)
-		os.Exit(1)
+	var result *vmlib.LaunchResult
+	var err error
+	if useX11 {
+		result, err = vmlib.LaunchAppX11(vmName, execCmd, vmCfg)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "vm: launch (x11):", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stdout, "x11 pid=%d title=%q\n", result.PID, result.WindowTitle)
+	} else {
+		result, err = vmlib.LaunchApp(vmName, execCmd, vmCfg)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "vm: launch:", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stdout, "waypipe pid=%d title=%q\n", result.PID, result.WindowTitle)
 	}
-	fmt.Fprintf(os.Stdout, "waypipe pid=%d title=%q\n", result.PID, result.WindowTitle)
 }
 func runSpotlist() {
 	running, err := vmlib.ListRunningVMs()
@@ -353,6 +371,126 @@ func runSpotlist() {
 }
 
 	json.NewEncoder(os.Stdout).Encode(allItems)
+}
+
+func runRefreshApps(cfgPath, filterVM string) {
+	cfg, err := vmlib.LoadConfig(cfgPath)
+	if err != nil {
+		log.Printf("load config: %v", err)
+		return
+	}
+
+	iconRemap := map[string]string{
+		"vscodium": "vscodium",
+		"codium":   "vscodium",
+		"firefox":  "firefox",
+		"ghostty":  "com.mitchellh.ghostty",
+	}
+
+	shouldShow := func(entry vmlib.AppEntry, path string) bool {
+		if entry.NoDisplay {
+			return false
+		}
+		if strings.Contains(entry.Exec, "%U") && !strings.Contains(entry.Exec, "%F") && !strings.Contains(entry.Exec, "%f") {
+			if strings.Contains(path, "-url-handler") || strings.Contains(path, "url-handler") {
+				return false
+			}
+			if strings.Contains(entry.Exec, "--open-url") || strings.Contains(entry.Exec, "-url-handler") {
+				return false
+			}
+		}
+		loweredName := strings.ToLower(entry.Name)
+		if strings.Contains(loweredName, "extension") ||
+			strings.Contains(loweredName, "plugin") ||
+			strings.Contains(loweredName, "module") ||
+			strings.Contains(loweredName, "library") ||
+			strings.Contains(loweredName, "daemon") ||
+			strings.Contains(loweredName, "background") {
+			return false
+		}
+		return true
+	}
+
+	mapIcon := func(icon string) string {
+		if icon == "" {
+			return "computer"
+		}
+		if remapped, ok := iconRemap[icon]; ok {
+			return remapped
+		}
+		return icon
+	}
+
+	var vmsToRefresh []string
+	if filterVM != "" {
+		vmsToRefresh = []string{filterVM}
+	} else {
+		vmsToRefresh, err = vmlib.ListRunningVMs()
+		if err != nil {
+			log.Printf("list-running: %v", err)
+			return
+		}
+	}
+
+	dirty := false
+	for _, vmName := range vmsToRefresh {
+		vmCfg, ok := cfg.VMs[vmName]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "vm: refresh: no config for VM %q\n", vmName)
+			continue
+		}
+
+		paths, err := vmlib.ListGuestApps(vmName, vmCfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "vm: refresh: ListGuestApps %s: %v\n", vmName, err)
+			continue
+		}
+
+		contents, err := vmlib.FetchDesktopFiles(vmCfg, paths)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "vm: refresh: FetchDesktopFiles %s: %v\n", vmName, err)
+			continue
+		}
+
+		seen := make(map[string]bool)
+		var apps []vmlib.AppEntry
+		for _, path := range paths {
+			name := vmlib.ParseDesktopName(path)
+			if seen[name] {
+				continue
+			}
+			content, ok := contents[path]
+			if !ok {
+				continue
+			}
+			entry := vmlib.ParseDesktopFile(content)
+			if entry.Name == "" {
+				entry.Name = name
+			}
+			if entry.Exec == "" {
+				continue
+			}
+			if !shouldShow(entry, path) {
+				continue
+			}
+			seen[name] = true
+			entry.Icon = mapIcon(entry.Icon)
+			apps = append(apps, entry)
+		}
+
+		vmCfg.Apps = apps
+		cfg.VMs[vmName] = vmCfg
+		dirty = true
+		fmt.Printf("vm: refresh: %s: %d apps\n", vmName, len(apps))
+	}
+
+	if dirty {
+		if err := vmlib.SaveConfig(cfgPath, cfg); err != nil {
+			log.Printf("save config: %v", err)
+			os.Exit(1)
+		}
+		fmt.Println("vm: refresh: saved to", cfgPath)
+	}
 }
 
 func runSaveConfig() {
